@@ -1,0 +1,93 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ include "helm-chart-ssc-pipeline.fullname" . }}
+  namespace: ci
+spec:
+  params:
+    - name: IMAGE_REPO
+      type: string
+    - name: IMAGE_TAG
+      type: string
+    - name: GIT_REF
+      type: string
+    - name: GIT_REPO
+      type: string
+    - name: CYCLONEDX_HOST_URL
+      type: string
+  tasks:
+    - name: fetch-source
+      params:
+        - name: url
+          value: $(params.GIT_REPO)
+        - name: revision
+          value: $(params.GIT_REF)
+        - name: deleteExisting
+          value: 'true'
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: shared-data
+    - name: acs-image-check
+      params:
+        - name: rox_central_endpoint
+          value: stackrox-endpoint
+        - name: rox_api_token
+          value: stackrox-secret
+        - name: image
+          value: '$(params.IMAGE_REPO):$(params.IMAGE_TAG)'
+        - name: insecure-skip-tls-verify
+          value: 'true'
+      runAfter:
+        - fetch-source
+      taskRef:
+        kind: Task
+        name: acs-image-check
+    - name: acs-image-scan
+      params:
+        - name: rox_central_endpoint
+          value: stackrox-endpoint
+        - name: rox_api_token
+          value: stackrox-secret
+        - name: image
+          value: '$(params.IMAGE_REPO):$(params.IMAGE_TAG)'
+        - name: insecure-skip-tls-verify
+          value: 'true'
+      runAfter:
+        - fetch-source
+      taskRef:
+        kind: Task
+        name: acs-image-scan
+    - name: grype-sbom-scan
+      params:
+        - name: ARGS
+          value: '$(params.IMAGE_REPO):$(params.IMAGE_TAG)'
+      runAfter:
+        - acs-image-scan
+        - acs-image-check
+      taskRef:
+        kind: Task
+        name: grype
+      workspaces:
+        - name: source-dir
+          workspace: shared-data
+    - name: kube-linter
+      params:
+        - name: manifest
+          value: helm
+        - name: default_option
+          value: do-not-auto-add-defaults
+        - name: includelist
+          value: 'no-extensions-v1beta,no-readiness-probe'
+      runAfter:
+        - grype-sbom-scan
+      taskRef:
+        kind: Task
+        name: kube-linter
+      workspaces:
+        - name: source
+          workspace: shared-data
+  workspaces:
+    - name: shared-data
